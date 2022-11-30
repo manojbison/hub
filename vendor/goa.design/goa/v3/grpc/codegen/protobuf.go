@@ -41,8 +41,8 @@ func (p *protoBufScope) Scope() *codegen.NameScope {
 }
 
 // protoBufTypeContext returns a contextual attribute for the protocol buffer type.
-func protoBufTypeContext(pkg string, scope *codegen.NameScope) *codegen.AttributeContext {
-	ctx := codegen.NewAttributeContext(false, true, true, pkg, scope)
+func protoBufTypeContext(pkg string, scope *codegen.NameScope, useDefault bool) *codegen.AttributeContext {
+	ctx := codegen.NewAttributeContext(false, true, useDefault, pkg, scope)
 	ctx.Scope = &protoBufScope{scope: scope}
 	return ctx
 }
@@ -66,14 +66,14 @@ func makeProtoBufMessage(att *expr.AttributeExpr, tname string, sd *ServiceData)
 		}
 		return att
 	case expr.IsPrimitive(att.Type):
-		wrapAttr(att, tname, sd)
+		wrapAttr(att, tname, true, sd)
 		return att
 	case isut:
 		if expr.IsArray(ut) {
-			wrapAttr(att, tname, sd)
+			wrapAttr(att, tname, false, sd)
 		}
 	case expr.IsArray(att.Type) || expr.IsMap(att.Type):
-		wrapAttr(att, tname, sd)
+		wrapAttr(att, tname, false, sd)
 	case expr.IsObject(att.Type) || expr.IsUnion(att.Type):
 		att.Type = &expr.UserTypeExpr{
 			TypeName:      tname,
@@ -102,12 +102,12 @@ func makeProtoBufMessageR(att *expr.AttributeExpr, tname *string, sd *ServiceDat
 		switch {
 		case expr.IsArray(att.Type):
 			wrapAttr(att, "ArrayOf"+tname+
-				protoBufify(protoBufMessageDef(expr.AsArray(att.Type).ElemType, sd), true, true), sd)
+				protoBufify(protoBufMessageDef(expr.AsArray(att.Type).ElemType, sd), true, true), true, sd)
 		case expr.IsMap(att.Type):
 			m := expr.AsMap(att.Type)
 			wrapAttr(att, tname+"MapOf"+
 				protoBufify(protoBufMessageDef(m.KeyType, sd), true, true)+
-				protoBufify(protoBufMessageDef(m.ElemType, sd), true, true), sd)
+				protoBufify(protoBufMessageDef(m.ElemType, sd), true, true), true, sd)
 		}
 	}
 
@@ -116,7 +116,7 @@ func makeProtoBufMessageR(att *expr.AttributeExpr, tname *string, sd *ServiceDat
 		return
 	case isut:
 		if expr.IsArray(ut) {
-			wrapAttr(ut.Attribute(), ut.Name(), sd)
+			wrapAttr(ut.Attribute(), ut.Name(), false, sd)
 		}
 		makeProtoBufMessageR(ut.Attribute(), tname, sd, seen)
 	case expr.IsArray(att.Type):
@@ -140,9 +140,9 @@ func makeProtoBufMessageR(att *expr.AttributeExpr, tname *string, sd *ServiceDat
 
 // wrapAttr makes the attribute type a user type by wrapping the given
 // attribute into an attribute named "field".
-func wrapAttr(att *expr.AttributeExpr, tname string, sd *ServiceData) {
+func wrapAttr(att *expr.AttributeExpr, tname string, req bool, sd *ServiceData) {
 	wrap := func(attr *expr.AttributeExpr) *expr.AttributeExpr {
-		return &expr.AttributeExpr{
+		res := &expr.AttributeExpr{
 			Type: &expr.Object{
 				&expr.NamedAttributeExpr{
 					Name: "field",
@@ -154,6 +154,12 @@ func wrapAttr(att *expr.AttributeExpr, tname string, sd *ServiceData) {
 				},
 			},
 		}
+		if req {
+			res.Validation = &expr.ValidationExpr{
+				Required: []string{"field"},
+			}
+		}
+		return res
 	}
 	switch dt := att.Type.(type) {
 	case expr.UserType:
@@ -298,6 +304,7 @@ func protoBufMessageDef(att *expr.AttributeExpr, sd *ServiceData) string {
 				fn   string
 				fnum uint64
 				typ  string
+				opt  string
 				desc string
 			)
 			{
@@ -308,11 +315,14 @@ func protoBufMessageDef(att *expr.AttributeExpr, sd *ServiceData) string {
 				} else {
 					typ = protoType(nat.Attribute, sd)
 				}
+				if !att.IsRequired(nat.Name) && expr.IsPrimitive(nat.Attribute.Type) {
+					opt = "optional "
+				}
 				if nat.Attribute.Description != "" {
 					desc = codegen.Comment(nat.Attribute.Description) + "\n\t"
 				}
 			}
-			ss = append(ss, fmt.Sprintf("\t%s%s %s = %d;", desc, typ, fn, fnum))
+			ss = append(ss, fmt.Sprintf("\t%s%s%s %s = %d;", desc, opt, typ, fn, fnum))
 		}
 		ss = append(ss, "}")
 		return strings.Join(ss, "\n")
@@ -449,7 +459,7 @@ func protoBufNativeGoTypeName(t expr.DataType) string {
 	case expr.BytesKind:
 		return "[]byte"
 	default:
-		panic(fmt.Sprintf("cannot compute native protocol buffer type for %T", t)) // bug
+		panic(fmt.Sprintf("cannot compute native protocol buffer type for %T %v", t, t)) // bug
 	}
 }
 

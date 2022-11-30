@@ -170,6 +170,8 @@ func (s *Scheduler) scheduleNextRun(job *Job) (bool, nextRun) {
 		return false, nextRun{}
 	}
 
+	lastRun := now
+
 	if job.neverRan() {
 		// Increment startAtTime to the future
 		if !job.startAtTime.IsZero() && job.startAtTime.Before(now) {
@@ -185,6 +187,8 @@ func (s *Scheduler) scheduleNextRun(job *Job) (bool, nextRun) {
 				job.startAtTime = job.startAtTime.Add(duration * count)
 			}
 		}
+	} else {
+		lastRun = job.LastRun()
 	}
 
 	if !job.shouldRun() {
@@ -192,10 +196,12 @@ func (s *Scheduler) scheduleNextRun(job *Job) (bool, nextRun) {
 		return false, nextRun{}
 	}
 
-	next := s.durationToNextRun(now, job)
+	next := s.durationToNextRun(lastRun, job)
 
+	job.setLastRun(job.NextRun())
 	if next.dateTime.IsZero() {
-		job.setNextRun(now.Add(next.duration))
+		next.dateTime = lastRun.Add(next.duration)
+		job.setNextRun(next.dateTime)
 	} else {
 		job.setNextRun(next.dateTime)
 	}
@@ -349,12 +355,6 @@ func (s *Scheduler) calculateTotalDaysDifference(lastRun time.Time, daysToWeekda
 func (s *Scheduler) calculateDays(job *Job, lastRun time.Time) nextRun {
 	if job.getInterval() == 1 {
 		lastRunDayPlusJobAtTime := s.roundToMidnight(lastRun).Add(job.getAtTime(lastRun))
-
-		// handle occasional occurrence of job running to quickly / too early such that last run was within a second of now
-		lastRunUnix, nowUnix := job.LastRun().Unix(), s.now().Unix()
-		if lastRunUnix == nowUnix || lastRunUnix == nowUnix-1 || lastRunUnix == nowUnix+1 {
-			lastRun = lastRunDayPlusJobAtTime
-		}
 
 		if shouldRunToday(lastRun, lastRunDayPlusJobAtTime) {
 			return nextRun{duration: until(lastRun, lastRunDayPlusJobAtTime), dateTime: lastRunDayPlusJobAtTime}
@@ -539,6 +539,13 @@ func (s *Scheduler) run(job *Job) {
 	}
 
 	job.mu.Lock()
+
+	if job.function == nil {
+		job.mu.Unlock()
+		s.Remove(job)
+		return
+	}
+
 	defer job.mu.Unlock()
 
 	if job.runWithDetails {
@@ -555,7 +562,6 @@ func (s *Scheduler) run(job *Job) {
 	}
 
 	s.executor.jobFunctions <- job.jobFunction.copy()
-	job.setLastRun(s.now())
 	job.runCount++
 }
 
@@ -571,7 +577,17 @@ func (s *Scheduler) runContinuous(job *Job) {
 		s.run(job)
 	}
 
-	job.setTimer(s.timer(next.duration, func() {
+	nextRun := next.dateTime.Sub(s.now())
+	if nextRun < 0 {
+		time.Sleep(absDuration(nextRun))
+		shouldRun, next := s.scheduleNextRun(job)
+		if !shouldRun {
+			return
+		}
+		nextRun = next.dateTime.Sub(s.now())
+	}
+
+	job.setTimer(s.timer(nextRun, func() {
 		if !next.dateTime.IsZero() {
 			for {
 				n := s.now().UnixNano() - next.dateTime.UnixNano()

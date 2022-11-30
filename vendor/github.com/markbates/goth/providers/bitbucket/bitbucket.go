@@ -162,11 +162,11 @@ func (p *Provider) getEmail(user *goth.User, sess *Session) error {
 		return fmt.Errorf("%s responded with a %d trying to fetch email addresses", p.providerName, response.StatusCode)
 	}
 
-	var mailList = []struct {
+	var mailList []struct {
 		Email     string `json:"email"`
 		Primary   bool   `json:"is_primary"`
 		Confirmed bool   `json:"is_confirmed"`
-	}{}
+	}
 	err = json.NewDecoder(response.Body).Decode(&mailList)
 	if err != nil {
 		return err
@@ -203,12 +203,12 @@ func newConfig(provider *Provider, scopes []string) *oauth2.Config {
 	return c
 }
 
-//RefreshTokenAvailable refresh token is provided by auth provider or not
+// RefreshTokenAvailable refresh token is provided by auth provider or not
 func (p *Provider) RefreshTokenAvailable() bool {
 	return true
 }
 
-//RefreshToken get new access token based on the refresh token
+// RefreshToken get new access token based on the refresh token
 func (p *Provider) RefreshToken(refreshToken string) (*oauth2.Token, error) {
 	token := &oauth2.Token{RefreshToken: refreshToken}
 	ts := p.config.TokenSource(goth.ContextForClient(p.Client()), token)
